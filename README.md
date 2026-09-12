@@ -4,3 +4,4 @@ src/  = 2026 layer: battery SoC proxy, 2026 feature builder, clean curve + cliff
 app/  = single-screen pit-wall decision dashboard.
 scripts/ = adapters + diagnostics (2026 battery features injected into the frozen harness).
 data/his/models/ = frozen Model A/B artifacts (joblib) from the 2025 core.
+# cleanstint
