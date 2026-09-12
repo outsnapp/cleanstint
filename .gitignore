@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+venv/ .venv/
+data/raw/ data/his/ f1_cache/ cache_theta/
+code_dump.txt signatures.txt dump_part*.txt

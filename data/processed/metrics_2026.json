@@ -1,0 +1,131 @@
+{
+  "n_practice_laps": 262,
+  "causal_wear_rate_s_per_lap": -7.9899,
+  "wear_rate_s_per_lap_by_compound": {
+    "HARD": 0.0,
+    "MEDIUM": 0.015,
+    "SOFT": 0.0356
+  },
+  "clean_curves": {
+    "HARD": {
+      "ages": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
+      ],
+      "vals": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "MEDIUM": {
+      "ages": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
+      ],
+      "vals": [
+        -0.06,
+        -0.06,
+        -0.003,
+        -0.003,
+        -0.003,
+        0.041,
+        0.041,
+        0.041,
+        0.041,
+        0.117,
+        0.117,
+        0.117,
+        0.117
+      ]
+    },
+    "SOFT": {
+      "ages": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
+      ],
+      "vals": [
+        -0.022,
+        -0.022,
+        -0.022,
+        -0.022,
+        0.034,
+        0.034,
+        0.034,
+        0.034,
+        0.05,
+        0.066,
+        0.066,
+        0.066,
+        0.319
+      ]
+    }
+  },
+  "cliff_windows": {
+    "HARD": [
+      13,
+      16
+    ],
+    "MEDIUM": [
+      13,
+      16
+    ],
+    "SOFT": [
+      12,
+      15
+    ]
+  },
+  "cliff_not_observed_in_session": [
+    "HARD",
+    "MEDIUM"
+  ],
+  "cleanstint_MAE_s_per_lap": 0.808,
+  "baseline_MAE_s_per_lap": 0.446,
+  "cliff_error_laps": 8.41,
+  "n_race_laps_validated": 768,
+  "n_anomaly_laps_excluded_SC_VSC": 0,
+  "MAE_definition": "within-stint pace-shape error (level removed), both models"
+}
