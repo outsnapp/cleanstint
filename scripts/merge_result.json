@@ -1,0 +1,11 @@
+{
+  "n_stints": 125,
+  "mean_delta_ms": 18.8,
+  "corr_delta_deploy": 0.3,
+  "per_compound_ms": {
+    "HARD": 38.2,
+    "MEDIUM": 45.2,
+    "SOFT": -41.1
+  },
+  "decision": "OUT: battery removed from wear path, kept for strategy layer"
+}

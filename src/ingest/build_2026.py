@@ -143,7 +143,7 @@ def build_session(year, gp, sess):
         all_kin = pd.concat([k for _, k in stint_kin.values()], ignore_index=True)
         envelope = bp.build_baseline_envelope(all_kin, cfg)
         import hashlib, json as _json, os as _os
-        _key = hashlib.md5((open('battery_proxy.py','rb').read()
+        _key = hashlib.md5((open('src/features/battery_proxy.py','rb').read()
                  + _json.dumps(cfg, sort_keys=True, default=str).encode()
                  + drv.encode() + sess.encode())).hexdigest()[:12]
         _cp = f"cache_theta/{sess}_{drv}_{_key}.json"
