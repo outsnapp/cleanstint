@@ -1,369 +1,403 @@
-"""
-CleanStint — single-screen decision-first dashboard (final version)
-"""
-import glob, json, os
+# CleanStint UI — reference design, verbatim (5 repo adaptations only)
+from pathlib import Path
+import json, re, math
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-st.set_page_config(page_title="CLEANSTINT", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="CleanStint", layout="wide", initial_sidebar_state="collapsed")
 
-DATA_DIR = "data"
-METRICS_PATH = "metrics.json"
-PROJECTION_LAPS = 10
-PIT_LANE_LOSS_S = 21.0
-APP_VERSION = "CLEANSTINT v3.0"
-ACCENT = "#ffb000"
-RISK_COLORS = {"LOW": "#2ecc71", "MEDIUM": "#ffb000", "HIGH": "#ff4d4d", "—": "#555555"}
+BASE = Path(__file__).resolve().parents[1]
+METRICS_PATH = BASE / "data" / "processed" / "metrics_2026.json"
+FORECAST_PATH = BASE / "data" / "processed" / "forecast_2026.json"
+DATA_DIR = BASE / "data" / "processed"
+
+ACCENT = "#e10600"; BG = "#0b0e11"; TEXT = "#e6e6e6"; MUTED = "#858b92"
+DIM = "#555b61"; LINE = "#22272c"; RAW = "#6e747b"; PANEL = "#0d1115"; WHITE = "#f1f1f1"
+RISK_COLORS = {"LOW": "#6f777e", "MEDIUM": "#aeb3b8", "HIGH": "#e10600"}
 
 @st.cache_data(show_spinner=False)
 def load_metrics():
+    if not METRICS_PATH.exists(): return {}
     try:
-        with open(METRICS_PATH, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+        with open(METRICS_PATH, "r", encoding="utf-8") as f: return json.load(f)
+    except Exception: return {}
 
 @st.cache_data(show_spinner=False)
-def load_laps():
-    paths = sorted(glob.glob(os.path.join(DATA_DIR, "laps_*.csv")))
-    frames = []
-    for p in paths:
-        try:
-            frames.append(pd.read_csv(p))
-        except Exception:
-            continue
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
-
-metrics = load_metrics()
-laps = load_laps()
-
-def safe_get(d, *keys, default=None):
-    cur = d
-    for k in keys:
-        if not isinstance(cur, dict) or k not in cur:
-            return default
-        cur = cur[k]
-    return cur
-
-def fmt(value, suffix="", digits=2):
+def load_forecast():
+    if not FORECAST_PATH.exists(): return {}
     try:
-        if value is None or (isinstance(value, float) and np.isnan(value)):
-            return "—"
-        return f"{value:.{digits}f}{suffix}"
-    except Exception:
-        return "—"
+        with open(FORECAST_PATH, "r", encoding="utf-8") as f: return json.load(f)
+    except Exception: return {}
 
-def curve_value(compound, age):
-    curve = safe_get(metrics, "clean_curves", compound)
-    if not curve or not curve.get("ages") or not curve.get("vals"):
-        return None
-    ages = np.array(curve["ages"], dtype=float)
-    vals = np.array(curve["vals"], dtype=float)
-    if len(ages) == 0:
-        return None
-    return float(np.interp(age, ages, vals))
+@st.cache_data(show_spinner=False)
+def load_csv(path_str):
+    try: return pd.read_csv(path_str)
+    except Exception: return pd.DataFrame()
 
-def cliff_for(compound):
-    cliff = safe_get(metrics, "cliff_windows", compound)
-    if isinstance(cliff, (list, tuple)) and len(cliff) == 2:
-        try:
-            return int(cliff[0]), int(cliff[1])
-        except Exception:
-            return None
-    return None
+@st.cache_data(show_spinner=False)
+def discover_csvs():
+    return sorted(DATA_DIR.glob("laps_2026_*.csv"))
 
-def cliff_missing(compound):
-    not_observed = metrics.get("cliff_not_observed_in_session") or []
-    return compound is None or compound in not_observed or cliff_for(compound) is None
+metrics = load_metrics(); forecast = load_forecast(); csv_files = discover_csvs()
 
-def wear_rate_for(compound):
-    wr = safe_get(metrics, "wear_rate_s_per_lap_by_compound", compound)
-    if wr is None:
-        wr = metrics.get("causal_wear_rate_s_per_lap")
-    return wr
+def safe_float(value, default=None):
+    try:
+        if value is None or pd.isna(value): return default
+        value = float(value); return value if math.isfinite(value) else default
+    except Exception: return default
 
-def project_total(compound, start_age, box_at_age, n_laps):
-    if compound is None:
-        return None
-    total, have_any, age, boxed = 0.0, False, start_age, False
-    for _ in range(n_laps):
-        age += 1
-        if (not boxed) and (box_at_age is not None) and age >= box_at_age:
-            total += PIT_LANE_LOSS_S
-            boxed = True
-            age = 1
-        v = curve_value(compound, age)
-        if v is not None:
-            total += v
-            have_any = True
-    return total if have_any else None
+def fmt_num(value, decimals=3, unit=""):
+    value = safe_float(value)
+    if value is None: return "—"
+    return f"{value:.{decimals}f}{unit}"
 
-def risk_chip_html(level):
-    level = level if level in RISK_COLORS else "—"
-    color = RISK_COLORS[level]
-    return f'<span class="risk-chip" style="background:{color}22;color:{color};border:1px solid {color}66;">{level}</span>'
+def clean_name(path): return path.stem.replace("laps_", "")
 
-def build_chart(df_stint, compound, cliff):
-    fig = go.Figure()
-    has_raw = (
-        df_stint is not None
-        and not df_stint.empty
-        and "tyre_age" in df_stint.columns
-        and "lap_time_s" in df_stint.columns
-    )
-    y_lo, y_hi = None, None
-    if has_raw:
-        fig.add_trace(
-            go.Scatter(
-                x=df_stint["tyre_age"], y=df_stint["lap_time_s"], mode="markers",
-                marker=dict(color="#5a5a5a", size=6),
-                hovertemplate="age %{x}<br>%{y:.3f}s<extra></extra>", showlegend=False, 
-            )
-        )
-        y_lo, y_hi = df_stint["lap_time_s"].min(), df_stint["lap_time_s"].max()
+def infer_session(path):
+    name = clean_name(path); parts = re.split(r"[_\-\s]+", name)
+    session = "SESSION"
+    for candidate in ("race", "qualifying", "quali", "practice", "fp1", "fp2", "fp3", "sprint"):
+        if candidate in name.lower():
+            session = candidate.upper().replace("QUALIFYING", "QUALI"); break
+    if session == "SESSION" and parts:
+        session = {"r": "RACE", "q": "QUALI"}.get(parts[-1].lower(), "SESSION")
+    return session
 
-    curve = safe_get(metrics, "clean_curves", compound)
-    if curve and curve.get("ages") and curve.get("vals"):
-        ages = np.array(curve["ages"], dtype=float)
-        vals = np.array(curve["vals"], dtype=float)
-        offset = 0.0
-        if has_raw and len(df_stint):
-            nearest_idx = (df_stint["tyre_age"] - ages[0]).abs().idxmin()
-            offset = df_stint.loc[nearest_idx, "lap_time_s"] - vals[0]
-        y_curve = vals + offset
-        fig.add_trace(
-            go.Scatter(
-                x=ages, y=y_curve, mode="lines", line=dict(color=ACCENT, width=2.5),
-                hovertemplate="age %{x}<br>%{y:.3f}s<extra></extra>", showlegend=False, 
-            )
-        )
-        y_lo = y_curve.min() if y_lo is None else min(y_lo, y_curve.min())
-        y_hi = y_curve.max() if y_hi is None else max(y_hi, y_curve.max())
+def infer_year(path):
+    match = re.search(r"(20\d{2})", path.name); return match.group(1) if match else "—"
 
-        if cliff:
-            a, b = cliff
-            pad = 0.5 if y_lo is not None else 0
-            fig.add_shape(
-                type="rect", x0=a, x1=b,
-                y0=(y_lo - pad) if y_lo is not None else 0,
-                y1=(y_hi + pad) if y_hi is not None else 1,
-                fillcolor=ACCENT, opacity=0.12, line_width=0, layer="below",
-            )
+def infer_gp(path):
+    name = clean_name(path)
+    match = re.search(r"20\d{2}[_\-\s]+(.+?)(?:[_\-\s]+(?:race|qualifying|quali|practice|fp1|fp2|fp3|sprint)|$)", name, re.IGNORECASE)
+    if match: return match.group(1).replace("_", " ").title()
+    parts = re.split(r"[_\-\s]+", name)
+    if len(parts) >= 2 and re.fullmatch(r"20\d{2}", parts[0]):
+        return " ".join(parts[1:-1]).title() if len(parts) > 2 else parts[1].title()
+    return "—"
 
-    fig.update_layout(
-        margin=dict(l=44, r=10, t=6, b=34),
-        paper_bgcolor="#0b0e11", plot_bgcolor="#0b0e11",
-        font=dict(color="#8a8a8a", size=10),
-        xaxis=dict(title="TYRE AGE (LAPS)", showgrid=False, zeroline=False, color="#6a6a6a"),
-        yaxis=dict(title="LAP TIME (S)", showgrid=True, gridcolor="#16191c", zeroline=False, color="#6a6a6a"),
-        showlegend=False,
-        height=330,
-    )
-    return fig
+def get_compounds(df):
+    if "compound" not in df.columns: return []
+    return sorted(df["compound"].dropna().astype(str).str.strip().str.upper().unique().tolist())
 
-st.markdown(
-    """
-<style>
-#MainMenu, header, footer {visibility:hidden;}
-[data-testid="stHeader"], .stDeployButton {display:none !important;}
-html, body, .stApp {background-color:#0b0e11 !important; color:#e6e6e6 !important; overflow:hidden !important; height:100vh;}
-.block-container {padding:0.5rem 1.1rem 0.3rem 1.1rem !important; max-width:100% !important;}
-[data-testid="stVerticalBlock"] {gap:0.3rem !important;}
-[data-testid="stHorizontalBlock"] {gap:0.6rem !important; align-items:center;}
-* {font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;} 
-div[data-baseweb="select"] > div {min-height:28px !important; background-color:#14181c !important; border:1px solid #222 !important; border-radius:4px !important; font-size:12px !important; color:#e6e6e6 !important;}
-ul[role="listbox"] {background-color:#14181c !important;}
-.wordmark {font-size:13px; font-weight:700; letter-spacing:.12em; color:#e6e6e6;}
-.tag {font-size:11px; color:#8a8a8a; text-align:right; letter-spacing:.02em;}
-.decision-line {display:flex; align-items:baseline; gap:14px; margin-top:4px;}
-.decision-text {font-size:48px; font-weight:600; line-height:1; font-variant-numeric:tabular-nums;}
-.risk-chip {font-size:10px; font-weight:700; letter-spacing:.06em; padding:3px 8px; border-radius:4px; text-transform:uppercase;}
-.reason-line {font-size:12px; color:#8a8a8a; margin-top:3px;}
-.radio-line {font-size:13px; color:#cfcfcf; font-family:"SFMono-Regular",Consolas,Menlo,monospace; margin-top:4px;}
-.option-block {border-top:1px solid #222; border-left:2px solid transparent; padding:8px 10px 4px 10px; height:110px; display:flex; flex-direction:column; gap:4px;}
-.option-block.recommended {border-left:2px solid #ffb000;}
-.option-title {font-size:10px; letter-spacing:.08em; color:#8a8a8a; text-transform:uppercase;}
-.option-delta {font-size:22px; font-weight:600; font-variant-numeric:tabular-nums;}
-.option-consequence {font-size:11px; color:#9a9a9a; margin-top:auto;}
-.key-numbers {display:flex; flex-direction:column; justify-content:space-between; height:330px; padding-left:10px; border-left:1px solid #222;}
-.key-label {font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#7a7a7a;}
-.key-value {font-size:26px; font-weight:600; font-variant-numeric:tabular-nums;}
-.footer {font-size:10px; color:#6a6a6a; border-top:1px solid #222; padding-top:4px; margin-top:2px;}
-</style>
-""",
-    unsafe_allow_html=True,
-)
+def get_drivers(df):
+    if "driver" not in df.columns: return []
+    return sorted(df["driver"].dropna().astype(str).str.strip().unique().tolist())
 
-top = st.columns([1.1, 1, 1, 1, 1.7])
-with top[0]:
-    st.markdown('<div class="wordmark">CLEANSTINT</div>', unsafe_allow_html=True)
+def get_clean_curve(metrics, compound):
+    curves = metrics.get("clean_curves", {})
+    if not isinstance(curves, dict): return None, None
+    item = curves.get(compound) or curves.get(compound.upper()) or curves.get(compound.lower())
+    if not isinstance(item, dict): return None, None
+    ages, vals = item.get("ages"), item.get("vals")
+    if not isinstance(ages, list) or not isinstance(vals, list): return None, None
+    n = min(len(ages), len(vals))
+    ages = [safe_float(x) for x in ages[:n]]; vals = [safe_float(x) for x in vals[:n]]
+    pairs = sorted((a, v) for a, v in zip(ages, vals) if a is not None and v is not None)
+    if not pairs: return None, None
+    return [x[0] for x in pairs], [x[1] for x in pairs]
 
-sessions = sorted(laps["session"].dropna().unique().tolist()) if "session" in laps.columns else []
-with top[1]:
-    session_sel = st.selectbox("session", sessions, label_visibility="collapsed") if sessions else None
+def get_cliff(metrics, compound):
+    windows = metrics.get("cliff_windows", {})
+    if not isinstance(windows, dict): return None
+    value = windows.get(compound) or windows.get(compound.upper()) or windows.get(compound.lower())
+    if not isinstance(value, (list, tuple)) or len(value) < 2: return None
+    a, b = safe_float(value[0]), safe_float(value[1])
+    if a is None or b is None: return None
+    return int(a), int(b)
 
-df_session = laps[laps["session"] == session_sel] if session_sel is not None else laps.iloc[0:0]
+def cliff_not_observed(metrics, compound):
+    values = metrics.get("cliff_not_observed_in_session", [])
+    if not isinstance(values, list): return False
+    return compound.upper() in {str(x).upper() for x in values}
 
-drivers = sorted(df_session["driver"].dropna().unique().tolist()) if "driver" in df_session.columns else []
-with top[2]:
-    driver_sel = st.selectbox("driver", drivers, label_visibility="collapsed") if drivers else None
+def get_wear_rate(metrics, compound):
+    by = metrics.get("wear_rate_s_per_lap_by_compound", {})
+    if isinstance(by, dict):
+        v = by.get(compound) or by.get(compound.upper()) or by.get(compound.lower())
+        if v is not None: return safe_float(v)
+    return safe_float(metrics.get("causal_wear_rate_s_per_lap"))
 
-df_driver = df_session[df_session["driver"] == driver_sel] if driver_sel is not None else df_session.iloc[0:0]
+def calculate_recommendation(age, cliff, no_cliff):
+    if no_cliff or cliff is None: return "RUN TO TARGET", None
+    start, end = cliff
+    if age >= start - 2: return "PIT NOW", start
+    if start - 2 > age >= start - 5: return "EXTEND", start
+    return "RUN TO TARGET", start
 
-compounds = sorted(df_driver["compound"].dropna().unique().tolist()) if "compound" in df_driver.columns else []
-with top[3]:
-    compound_sel = st.selectbox("compound", compounds, label_visibility="collapsed") if compounds else None
-
-with top[4]:
-    st.markdown(f'<div class="tag">{session_sel or "—"} · frozen model</div>', unsafe_allow_html=True)
-
-df_stint = df_driver[df_driver["compound"] == compound_sel] if compound_sel is not None else df_driver.iloc[0:0]
-df_plot = df_stint[df_stint["is_representative"] == 1] if "is_representative" in df_stint.columns else df_stint
-
-current_age = (
-    int(df_stint["tyre_age"].max())
-    if not df_stint.empty and "tyre_age" in df_stint.columns and df_stint["tyre_age"].notna().any()
-    else 0
-)
-is_race = session_sel is not None and str(session_sel).strip().upper() in ("R", "RACE") 
-
-no_cliff = cliff_missing(compound_sel)
-cliff = None if no_cliff else cliff_for(compound_sel)
-wr = wear_rate_for(compound_sel)
-
-if no_cliff:
-    decision_key = "RUN TO TARGET"
-    decision_text = "NO CLIFF IN SESSION WINDOW — RUN TO TARGET"
-    reason = f"cliff not observed this session · wear {fmt(wr, ' s/lap', 3)}"
-    radio_text = 'RADIO: "Stay out, manage the pace, run to target."'
-else:
-    a, b = cliff
-    if current_age >= a - 2:
-        decision_key, decision_text = "PIT NOW", "PIT NOW"
-        radio_text = 'RADIO: "Box, box — pit now."'
-    elif a - 5 <= current_age < a - 2:
-        decision_key, decision_text = "EXTEND", f"EXTEND — BOX LAP {a}"
-        radio_text = f'RADIO: "Stay out, stay out — box lap {a}."'
-    else:
-        decision_key, decision_text = "RUN TO TARGET", "RUN TO TARGET"
-        radio_text = 'RADIO: "Stay out, manage the pace, run to target."'
-    reason = f"cliff window {a}–{b} · wear {wr:+.3f} s/lap after {a}" if wr is not None else f"cliff window {a}–{b}"
-
-if is_race:
-    reason = "retrospective (race complete) · " + reason
-    radio_text = 'RADIO: session complete — review only.'
-
-def option_risk(name):
-    if name == "PIT NOW":
-        return "LOW"
-    if name == "EXTEND":
-        if no_cliff:
-            return "HIGH"
-        return "HIGH" if (cliff[1] - cliff[0]) <= 2 else "MEDIUM"
-    if no_cliff:
-        return "LOW"
-    a = cliff[0]
-    if current_age + PROJECTION_LAPS >= a:
-        return "HIGH"
-    if current_age + PROJECTION_LAPS >= a - 3:
-        return "MEDIUM"
+def calculate_risk(compound, cliff, age, no_cliff):
+    if no_cliff or cliff is None: return "LOW"
+    start, end = cliff; width = max(0, end - start + 1)
+    if age >= start: return "HIGH"
+    if age >= start - 2: return "HIGH"
+    if width <= 2: return "MEDIUM"
     return "LOW"
 
-def decision_risk():
-    level = option_risk(decision_key)
-    if wr is not None and wr > 0.12 and level != "HIGH":
-        level = "MEDIUM" if level == "LOW" else "HIGH"
-    return level
+def expected_pace_change(curve_ages, curve_vals, age, laps=10):
+    if not curve_ages or not curve_vals: return None, None, None
+    series = pd.Series(curve_vals, index=curve_ages).sort_index()
+    current = future = None
+    for a in series.index:
+        if a <= age: current = series.loc[a]
+        if a >= age + laps and future is None: future = series.loc[a]
+    if current is None: current = series.iloc[0]
+    if future is None: future = series.iloc[-1]
+    delta = safe_float(future) - safe_float(current)
+    slopes = series.diff().dropna(); slope = safe_float(slopes.median(), 0.0)
+    band = abs(slope) * 2.5 * laps
+    return delta, max(0, delta - band), delta + band
 
-st.markdown(
-    f"""
-<div class="decision-line"><span class="decision-text">{decision_text}</span>{risk_chip_html(decision_risk())}</div>
-<div class="reason-line">{reason}</div>
-<div class="radio-line">{radio_text}</div>
-""",
-    unsafe_allow_html=True,
-)
+def raw_laps(df, driver, compound):
+    if df.empty: return pd.DataFrame()
+    out = df.copy()
+    if "driver" in out.columns: out = out[out["driver"].astype(str).str.strip() == str(driver).strip()]
+    if "compound" in out.columns: out = out[out["compound"].astype(str).str.strip().str.upper() == compound.upper()]
+    if not {"tyre_age", "lap_time_s"}.issubset(out.columns): return pd.DataFrame()
+    out["tyre_age"] = pd.to_numeric(out["tyre_age"], errors="coerce")
+    out["lap_time_s"] = pd.to_numeric(out["lap_time_s"], errors="coerce")
+    out = out.dropna(subset=["tyre_age", "lap_time_s"])
+    if "is_representative" in out.columns:
+        rep = out["is_representative"].astype(str).str.lower().isin(["true", "1", "yes"])
+        if rep.any(): out = out[rep]
+    return out
 
-box_targets = {"PIT NOW": current_age, "EXTEND": None if no_cliff else cliff[0], "RUN TO TARGET": None}
-totals = {k: project_total(compound_sel, current_age, v, PROJECTION_LAPS) for k, v in box_targets.items()}
-ref = totals.get(decision_key)
-deltas = {
-    k: (ref - totals[k] if totals[k] is not None and ref is not None else None)
-    for k in totals
+st.markdown(f"""
+<style>
+html, body, [data-testid="stAppViewContainer"] {{ background: {BG} !important; color: {TEXT} !important; overflow: hidden !important; }}
+[data-testid="stAppViewContainer"] {{ min-height: 100vh !important; }}
+[data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], #MainMenu, footer, header {{ display: none !important; visibility: hidden !important; }}
+.block-container {{ padding: 0 !important; margin: 0 !important; max-width: none !important; }}
+section.main > div {{ padding: 0 !important; }}
+* {{ box-sizing: border-box; }}
+body {{ font-family: Arial, Helvetica, sans-serif !important; }}
+.cleanstint-shell {{ height: 100vh; max-height: 100vh; padding: 0 30px; overflow: hidden; background: {BG}; }}
+.topbar-rule {{ border-bottom: 1px solid {LINE}; height: 0; margin: 4px 0 0 0; }}
+.wordmark {{ font-size: 18px; line-height: 1; font-weight: 800; letter-spacing: .04em; color: {WHITE}; }}
+.wordmark span {{ color: {ACCENT}; }}
+.top-meta {{ text-align: right; color: {MUTED}; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; padding-top: 8px; }}
+.selector-label {{ color: {MUTED}; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 2px; }}
+.decision {{ height: 245px; border-bottom: 1px solid {LINE}; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }}
+.decision-label {{ color: {MUTED}; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 7px; }}
+.decision-line {{ display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: nowrap; }}
+.decision-main {{ color: {WHITE}; font-size: clamp(38px, 4vw, 54px); line-height: 1; font-weight: 650; letter-spacing: -.035em; font-variant-numeric: tabular-nums; }}
+.decision-main .accent {{ color: {ACCENT}; }}
+.risk {{ display: inline-block; padding: 5px 8px; border: 1px solid {DIM}; border-radius: 2px; font-size: 9px; font-weight: 700; letter-spacing: .08em; line-height: 1; }}
+.risk-high {{ border-color: {ACCENT}; color: {ACCENT}; }}
+.risk-medium {{ border-color: #777d83; color: #d0d3d6; }}
+.risk-low {{ border-color: #42484d; color: #9da2a7; }}
+.reason {{ color: #b3b7bb; font-size: 12px; margin-top: 9px; font-variant-numeric: tabular-nums; }}
+.radio {{ margin-top: 11px; color: {TEXT}; font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; letter-spacing: .01em; }}
+.options {{ height: 184px; padding: 12px 0; border-bottom: 1px solid {LINE}; }}
+.option {{ height: 160px; border: 1px solid {LINE}; background: {PANEL}; padding: 17px 20px; position: relative; }}
+.option.recommended {{ border-left: 2px solid {ACCENT}; }}
+.option-title {{ color: {TEXT}; font-size: 11px; font-weight: 700; letter-spacing: .09em; }}
+.option-value {{ color: {WHITE}; font-size: 31px; font-weight: 650; margin-top: 10px; font-variant-numeric: tabular-nums; }}
+.option-value span {{ color: {MUTED}; font-size: 11px; font-weight: 400; margin-left: 4px; }}
+.option-risk {{ position: absolute; top: 17px; right: 18px; }}
+.consequence {{ position: absolute; bottom: 16px; left: 20px; right: 18px; color: #a5aaaf; font-size: 11px; line-height: 1.35; }}
+.split {{ height: 340px; display: flex; border-bottom: 1px solid {LINE}; }}
+.chart {{ width: 67%; border-right: 1px solid {LINE}; padding: 7px 12px 0 0; }}
+.stats {{ width: 33%; display: flex; flex-direction: column; }}
+.stat {{ flex: 1; padding: 13px 0 10px 22px; border-bottom: 1px solid {LINE}; }}
+.stat:last-child {{ border-bottom: 0; }}
+.stat-label {{ color: {MUTED}; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }}
+.stat-number {{ margin-top: 6px; color: {WHITE}; font-size: 25px; line-height: 1; font-weight: 650; font-variant-numeric: tabular-nums; }}
+.stat-number small {{ color: {TEXT}; font-size: 12px; font-weight: 400; }}
+.stat-sub {{ color: {MUTED}; font-size: 9px; margin-top: 6px; }}
+.footer {{ height: 28px; display: flex; align-items: center; justify-content: space-between; color: #666c72; font-size: 9px; letter-spacing: .01em; }}
+.stSelectbox {{ margin: 0 !important; }}
+div[data-baseweb="select"] > div {{ min-height: 27px !important; height: 27px !important; background: transparent !important; border: 1px solid #30363b !important; border-radius: 2px !important; color: {TEXT} !important; box-shadow: none !important; }}
+div[data-baseweb="select"] span {{ font-size: 10px !important; }}
+[data-testid="column"] {{ padding-left: 5px !important; padding-right: 5px !important; }}
+[data-testid="stVerticalBlock"] {{ gap: 0 !important; }}
+div[data-testid="stMarkdownContainer"] p {{ margin: 0 !important; }}
+.stats {{ border-left: 1px solid #22272c; }}
+[data-testid="stPlotlyChart"] {{ border-right: 1px solid #22272c; padding-right: 12px; }}
+</style>
+""", unsafe_allow_html=True)
+
+if not csv_files:
+    st.error("No laps_2026_*.csv files found in data/processed/."); st.stop()
+
+file_names = [p.name for p in csv_files]
+
+hdr = st.columns([2.3, 1.7, 1.2, 1.2, 2.3])
+with hdr[0]:
+    st.markdown('<div class="wordmark">CLEAN<span>STINT</span></div>', unsafe_allow_html=True)
+with hdr[1]:
+    st.markdown('<div class="selector-label">SESSION FILE</div>', unsafe_allow_html=True)
+    selected_file_name = st.selectbox("Session file", file_names, label_visibility="collapsed")
+selected_path = next(p for p in csv_files if p.name == selected_file_name)
+df = load_csv(str(selected_path))
+session_name = infer_session(selected_path); year = infer_year(selected_path); gp = infer_gp(selected_path)
+drivers = get_drivers(df) or ["—"]; compounds = get_compounds(df) or ["—"]
+with hdr[2]:
+    st.markdown('<div class="selector-label">DRIVER</div>', unsafe_allow_html=True)
+    driver = st.selectbox("Driver", drivers, label_visibility="collapsed")
+with hdr[3]:
+    st.markdown('<div class="selector-label">COMPOUND</div>', unsafe_allow_html=True)
+    compound = st.selectbox("Compound", compounds, index=compounds.index("SOFT") if "SOFT" in compounds else 0, label_visibility="collapsed")
+with hdr[4]:
+    st.markdown(f'<div class="top-meta">{year} {gp} {session_name} · frozen model</div>', unsafe_allow_html=True)
+st.markdown('<div class="topbar-rule"></div>', unsafe_allow_html=True)
+
+filtered = raw_laps(df, driver, compound)
+current_age = safe_float(filtered["tyre_age"].max(), 0) if (not filtered.empty and "tyre_age" in filtered.columns) else 0
+current_age_int = int(current_age or 0)
+cliff = get_cliff(metrics, compound)
+no_cliff = cliff_not_observed(metrics, compound)
+decision, target_lap = calculate_recommendation(current_age, cliff, no_cliff)
+risk = calculate_risk(compound, cliff, current_age, no_cliff)
+wear_rate = get_wear_rate(metrics, compound)
+curve_ages, curve_vals = get_clean_curve(metrics, compound)
+pace_delta, pace_low, pace_high = expected_pace_change(curve_ages, curve_vals, current_age, 10)
+_ent = forecast.get(f"{compound}@{current_age_int}") or forecast.get(f"{compound}@{min(max(current_age_int,5),15)}") if isinstance(forecast, dict) else None
+if isinstance(_ent, dict):
+    _v = _ent.get("+10") or _ent.get("10")
+    if isinstance(_v, (list, tuple)) and len(_v) == 3:
+        pace_delta, pace_low, pace_high = (safe_float(x) for x in _v)
+
+if no_cliff:
+    reason = f"no observed cliff · current tyre age {current_age_int} laps"
+    radio = 'RADIO: "No cliff observed — run to target."'
+elif cliff:
+    start, end = cliff
+    wear_text = f"wear +{wear_rate:.3f} s/lap after {start}" if wear_rate is not None else "wear rate unavailable"
+    reason = f"cliff window {start}–{end} · {wear_text}"
+    if decision == "PIT NOW": radio = f'RADIO: "Box this lap — tyre is entering the cliff window."'
+    elif decision == "EXTEND": radio = f'RADIO: "Stay out, stay out — box lap {start}."'
+    else: radio = 'RADIO: "Stay out — run to target."'
+else:
+    reason = f"current tyre age {current_age_int} laps · cliff unavailable"
+    radio = 'RADIO: "Run to target — cliff data unavailable."'
+
+PIT_LANE_LOSS_S = 21.0
+def _cat(x):
+    return float(np.interp(x, curve_ages, curve_vals))
+def _total(box_at):
+    if curve_ages is None: return None
+    t, ag, boxed = 0.0, current_age, False
+    for _ in range(10):
+        ag += 1
+        if (not boxed) and (box_at is not None) and ag >= box_at:
+            t += PIT_LANE_LOSS_S; boxed = True; ag = 1
+        t += _cat(ag)
+    return t
+def option_delta(option):
+    if cliff is None or curve_ages is None: return None
+    targets = {"PIT NOW": current_age, "EXTEND": cliff[0], "RUN TO TARGET": None}
+    ref = _total(targets.get(decision))
+    val = _total(targets.get(option))
+    if ref is None or val is None: return None
+    return val - ref
+
+option_data = {
+    "PIT NOW": {"delta": option_delta("PIT NOW"), "risk": "HIGH" if cliff and current_age >= cliff[0] - 2 else "MEDIUM",
+                "consequence": "Track position cost increases; degradation exposure falls."},
+    "EXTEND": {"delta": option_delta("EXTEND"), "risk": "MEDIUM",
+               "consequence": (f"Box at lap {cliff[0]} before the steepest degradation." if cliff else "No observed cliff; target lap remains undefined.")},
+    "RUN TO TARGET": {"delta": option_delta("RUN TO TARGET"), "risk": "HIGH" if cliff and current_age >= cliff[0] else "LOW",
+                      "consequence": (f"Carries tyre beyond the {cliff[0]}–{cliff[1]} cliff window." if cliff else "No observed cliff in the available session window.")},
 }
 
-consequences = {
-    "PIT NOW": "Fresh tyre immediately, fixed pit-lane cost, resets the wear clock.",
-    "EXTEND": (
-        f"Runs {max(cliff[0] - current_age, 0)} more laps before boxing at the model cliff."
-        if not no_cliff
-        else "No cliff observed — extend point is not data-backed."
-    ),
-    "RUN TO TARGET": (
-        "Holds the tyre through the projection window without pitting."
-        if no_cliff or current_age + PROJECTION_LAPS < cliff[0]
-        else "Pace risk rises — projection window crosses the cliff."
-    ),
-}
+def format_delta(value):
+    if value is None: return "—"
+    sign = "+" if value >= 0 else ""
+    return f"{sign}{value:.1f} s"
 
-cols = st.columns(3)
-for col, name in zip(cols, ["PIT NOW", "EXTEND", "RUN TO TARGET"]):
-    d = deltas.get(name)
-    delta_str = "PLAN" if name == decision_key else (f"{d:+.2f}s" if d is not None else "—")
-    rec_class = "recommended" if name == decision_key else ""
+# shell wrapper removed: Streamlit fragments auto-close divs
+
+decision_html = decision
+if decision in ("PIT NOW", "EXTEND"):
+    first, *rest = decision.split(" ", 1)
+    decision_html = f'<span class="accent">{first}</span>' + ((" " + rest[0]) if rest else "")
+if target_lap is not None and decision != "RUN TO TARGET":
+    decision_html += f" — BOX LAP {target_lap}"
+
+st.markdown(f"""
+<div class="decision">
+    <div class="decision-label">RECOMMENDATION</div>
+    <div class="decision-line">
+        <div class="decision-main">{decision_html}</div>
+        <div class="risk risk-{risk.lower()}">{risk}</div>
+    </div>
+    <div class="reason">{reason}</div>
+    <div class="radio">{radio}</div>
+</div>
+""", unsafe_allow_html=True)
+
+option_cols = st.columns(3)
+for col, name in zip(option_cols, ["PIT NOW", "EXTEND", "RUN TO TARGET"]):
+    data = option_data[name]; recommended = name == decision
     with col:
-        st.markdown(
-            f"""
-<div class="option-block {rec_class}">
-  <div class="option-title">{name}</div>
-  <div class="option-delta">{delta_str}</div>
-  {risk_chip_html(option_risk(name))}
-  <div class="option-consequence">{consequences[name]}</div>
+        st.markdown(f"""
+<div class="option {'recommended' if recommended else ''}">
+    <div class="option-title">{name}</div>
+    <div class="option-value">{format_delta(data["delta"])}<span>vs plan</span></div>
+    <div class="option-risk risk risk-{data["risk"].lower()}">{data["risk"]}</div>
+    <div class="consequence">{data["consequence"]}</div>
 </div>
-""",
-            unsafe_allow_html=True,
-        )
+""", unsafe_allow_html=True)
 
-left, right = st.columns([0.6, 0.4])
-with left:
-    st.plotly_chart(build_chart(df_plot, compound_sel, cliff), width="stretch", config={"displayModeBar": False})
+chart_df = filtered.copy()
+fig = go.Figure()
+if not chart_df.empty:
+    fig.add_trace(go.Scatter(x=chart_df["tyre_age"], y=chart_df["lap_time_s"], mode="markers",
+                marker=dict(size=4, color=RAW, opacity=0.65),
+                hovertemplate="tyre age %{x:.0f} laps<br>lap time %{y:.3f} s<extra></extra>", showlegend=False))
+if curve_ages and curve_vals:
+    off = float(chart_df["lap_time_s"].median()) - float(np.median(curve_vals)) if not chart_df.empty else 0.0
+    y_curve = [v + off for v in curve_vals]
+    fig.add_trace(go.Scatter(x=curve_ages, y=y_curve, mode="lines", line=dict(color=ACCENT, width=2.5),
+                hovertemplate="tyre age %{x:.0f} laps<br>clean curve %{y:.3f} s<extra></extra>", showlegend=False))
+    if cliff:
+        start, end = cliff
+        if any(start <= a <= end for a in curve_ages):
+            y0, y1 = min(y_curve), max(y_curve)
+            if y0 == y1: y0 -= 1; y1 += 1
+            fig.add_shape(type="rect", x0=start, x1=end, y0=y0, y1=y1, fillcolor=ACCENT, opacity=0.10, line=dict(width=0), layer="below")
+            fig.add_annotation(x=(start + end) / 2, y=y1, text=f"CLIFF WINDOW<br>{start}–{end}", showarrow=False, yshift=-7, font=dict(size=9, color=ACCENT))
+fig.update_layout(height=326, margin=dict(l=45, r=8, t=18, b=30), paper_bgcolor=BG, plot_bgcolor=BG,
+    font=dict(family="Arial, Helvetica, sans-serif", color=TEXT, size=10),
+    xaxis=dict(title=dict(text="TYRE AGE (LAPS)", font=dict(size=9, color=MUTED)), tickfont=dict(size=9, color=MUTED), showgrid=False, zeroline=False, linecolor="#30353a", ticks="outside", tickcolor="#30353a"),
+    yaxis=dict(title=dict(text="LAP TIME (S)", font=dict(size=9, color=MUTED)), tickfont=dict(size=9, color=MUTED), showgrid=False, zeroline=False, linecolor="#30353a", ticks="outside", tickcolor="#30353a"),
+    hoverlabel=dict(bgcolor="#11161a", bordercolor="#33383d", font=dict(color=TEXT, size=10)))
 
-with right:
-    cliff_txt = f"{cliff[0]}–{cliff[1]} laps" if not no_cliff else ("not observed" if compound_sel else "—")
-    c_now = curve_value(compound_sel, current_age) if compound_sel else None
-    c_then = curve_value(compound_sel, current_age + PROJECTION_LAPS) if compound_sel else None
-    pace10 = (c_then - c_now) if (c_now is not None and c_then is not None) else None
-    mae = metrics.get("cleanstint_MAE_s_per_lap")
-    base_mae = metrics.get("baseline_MAE_s_per_lap")
-    pace10_str = f"{pace10:+.2f}s (±{mae:.2f})" if pace10 is not None and mae is not None else fmt(pace10, "s", 2)
-    val_str = f"{mae:.3f} vs {base_mae:.3f} s/lap" if mae is not None and base_mae is not None else "—"
-    
-    net_bias = None
-    if not df_stint.empty and {"e_deploy_lap_mj", "e_harvest_lap_mj"} <= set(df_stint.columns):
-        _nb = (df_stint["e_deploy_lap_mj"] - df_stint["e_harvest_lap_mj"]).dropna()
-        if len(_nb):
-            net_bias = float(_nb.mean())
-    net_bias_str = fmt(net_bias, " MJ", 2)
+chart_cols = st.columns([2.0, 1.0])
+with chart_cols[0]:
+    st.markdown('<div style="color:#858b92;font-size:9px;letter-spacing:.1em;padding:7px 0 0 0;">LAP TIME VS TYRE AGE</div>', unsafe_allow_html=True)
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "responsive": True})
 
-    st.markdown(
-        f"""
-<div class="key-numbers">
-  <div><div class="key-label">WEAR RATE (S/LAP)</div><div class="key-value">{fmt(wr, "", 3)}</div></div>
-  <div><div class="key-label">CLIFF WINDOW</div><div class="key-value">{cliff_txt}</div></div>
-  <div><div class="key-label">PACE IN +10 LAPS</div><div class="key-value">{pace10_str}</div></div>
-  <div><div class="key-label">VALIDATION (MAE VS BASELINE)</div><div class="key-value">{val_str}</div></div>
-  <div><div class="key-label">NET ENERGY BIAS (DEPLOY−HARVEST)</div><div class="key-value">{net_bias_str}</div></div>
+validation_clean = safe_float(metrics.get("cleanstint_MAE_s_per_lap"))
+validation_base = safe_float(metrics.get("baseline_MAE_s_per_lap"))
+cliff_text = f"{cliff[0]}–{cliff[1]} laps" if cliff else "—"
+if pace_delta is not None:
+    pace_number = f"{pace_delta:+.2f}"; pace_band = f"({pace_low:+.2f} to {pace_high:+.2f}) s/lap"
+else:
+    pace_number = "—"; pace_band = ""
+validation_text = (f'{validation_clean:.3f} <small>vs</small> {validation_base:.3f} <small>s/lap</small>') if (validation_clean is not None and validation_base is not None) else "—"
+
+with chart_cols[1]:
+    st.markdown(f"""
+<div class="stats">
+    <div class="stat"><div class="stat-label">WEAR RATE (S/LAP)</div><div class="stat-number">{fmt_num(wear_rate, 3)} <small>s/lap</small></div><div class="stat-sub">causal wear rate</div></div>
+    <div class="stat"><div class="stat-label">CLIFF WINDOW</div><div class="stat-number">{cliff_text}</div><div class="stat-sub">tyre age</div></div>
+    <div class="stat"><div class="stat-label">PACE IN +10 LAPS</div><div class="stat-number">{pace_number} <small>s/lap</small></div><div class="stat-sub">{pace_band}</div></div>
+    <div class="stat"><div class="stat-label">VALIDATION</div><div class="stat-number">{validation_text}</div><div class="stat-sub">CleanStint MAE vs baseline MAE</div></div>
 </div>
-""",
-        unsafe_allow_html=True,
-    )
+""", unsafe_allow_html=True)
 
-st.markdown(
-    f'<div class="footer">Limits: wet sessions, SC/VSC laps, short FP stints not modeled · '
-    f'battery = regulation-capped SoC proxy, not raw telemetry · option deltas vs plan, + = faster · {APP_VERSION}</div>',
-    unsafe_allow_html=True,
-)
+n_anomaly = metrics.get("n_anomaly_laps_excluded_SC_VSC")
+version = "v0.1.0"
+footer_text = ("LIMITS: wet conditions · SC/VSC laps excluded · short FP stints · battery = regulation-capped proxy, not telemetry")
+if n_anomaly is not None:
+    footer_text += f" · {n_anomaly} anomaly laps excluded"
+st.markdown('<div class="topbar-rule"></div>', unsafe_allow_html=True)
+st.markdown(f"""
+<div class="footer">
+    <span>{footer_text}</span>
+    <span>CleanStint {version}</span>
+</div>
+""", unsafe_allow_html=True)
+
