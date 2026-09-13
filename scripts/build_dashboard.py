@@ -44,6 +44,11 @@ def interp(x, xs, ys):
 def build_combo(df, comp):
     xs, ys = curve_for(comp); cliff = cliff_for(comp); noclf = noclf_for(comp); wear = wear_for(comp)
     d = df.copy()
+    if "tyre_age" not in d.columns and "tyre_life" in d.columns:
+        d["tyre_age"] = d["tyre_life"]
+    for _c in ("e_deploy_lap_mj", "e_harvest_lap_mj", "fuel_in_stint_kg", "traffic_flag"):
+        if _c not in d.columns:
+            d[_c] = 0.0
     d["tyre_age"] = pd.to_numeric(d["tyre_age"], errors="coerce")
     d["lap_time_s"] = pd.to_numeric(d["lap_time_s"], errors="coerce")
     d = d.dropna(subset=["tyre_age", "lap_time_s"])

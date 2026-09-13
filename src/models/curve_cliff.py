@@ -66,7 +66,7 @@ def main(gp):
     prac[CONTROLS] = prac[CONTROLS].fillna(prac[CONTROLS].median())
     X = prac[CONTROLS].values
     y = prac["lap_time_s"].values
-    age = prac["tyre_age"].values
+    age = prac["tyre_life"].values
 
     # ---- Double ML residualization ----
     mA = GradientBoostingRegressor(n_estimators=200, max_depth=3, random_state=0)
@@ -80,15 +80,15 @@ def main(gp):
 
     # ---- clean monotone wear curve per compound ----
     curves, sigmas, cliffs = {}, {}, {}
-    ages = np.arange(1, int(prac["tyre_age"].max()) + 1)
+    ages = np.arange(1, int(prac["tyre_life"].max()) + 1)
     for comp, g in prac.groupby("compound"):
         Xc = g[CONTROLS].fillna(0.0).values
         rc = g["lap_time_s"].values - mA.predict(Xc)
         rc = rc - pd.Series(rc).groupby(g["stint"].to_numpy()).transform("mean").to_numpy()
         iso = IsotonicRegression(increasing=True, out_of_bounds="clip")
-        iso.fit(g["tyre_age"].values, rc)
+        iso.fit(g["tyre_life"].values, rc)
         curves[comp] = iso
-        sigmas[comp] = float(np.std(rc - iso.predict(g["tyre_age"].values)))
+        sigmas[comp] = float(np.std(rc - iso.predict(g["tyre_life"].values)))
         cliffs[comp] = cliff_window(ages, iso.predict(ages))
         print(f"{comp}: cliff window Lap {cliffs[comp][0]}–{cliffs[comp][1]} "
               f"(sigma {sigmas[comp]:.3f}s)")
@@ -133,22 +133,22 @@ def main(gp):
         clean["resid"] = clean["lap_time_s"].values - mA.predict(Xr)
         errs, base_errs, cliff_errs = [], [], []
         for (drv, stint), g in clean.groupby(["driver", "stint"]):
-            g = g.sort_values("tyre_age")
+            g = g.sort_values("tyre_life")
             comp = g["compound"].iloc[0]
             if comp not in curves or len(g) < 6:
                 continue
-            pred = curves[comp].predict(g["tyre_age"].values)
+            pred = curves[comp].predict(g["tyre_life"].values)
             e = (g["resid"].values - g["resid"].values.mean()) - (pred - pred.mean())
             errs.extend(np.abs(e))
             # baseline: raw linear fit from practice
             gp_ = prac[prac["compound"] == comp]
-            bl = LinearRegression().fit(gp_["tyre_age"].values.reshape(-1, 1),
+            bl = LinearRegression().fit(gp_["tyre_life"].values.reshape(-1, 1),
                                         gp_["lap_time_s"].values)
             base_errs.extend(np.abs(g["lap_time_s"].values -
-                                    bl.predict(g["tyre_age"].values.reshape(-1, 1))
+                                    bl.predict(g["tyre_life"].values.reshape(-1, 1))
                                     - (g["lap_time_s"].mean() -
-                                       bl.predict(g["tyre_age"].values.reshape(-1, 1)).mean())))
-            obs = cliff_window(g["tyre_age"].values, g["resid"].values)
+                                       bl.predict(g["tyre_life"].values.reshape(-1, 1)).mean())))
+            obs = cliff_window(g["tyre_life"].values, g["resid"].values)
             pr = cliffs[comp]
             cliff_errs.append(abs(0.5 * (obs[0] + obs[1]) - 0.5 * (pr[0] + pr[1])))
         metrics.update({
@@ -165,7 +165,7 @@ def main(gp):
 
         # plot for the deck (matches your submission slide)
         plt.figure(figsize=(10, 6))
-        plt.scatter(clean["tyre_age"], clean["resid"], s=18, alpha=0.6,
+        plt.scatter(clean["tyre_life"], clean["resid"], s=18, alpha=0.6,
                     label="Actual race laps (confounder-removed)")
         for comp in curves:
             plt.plot(ages, curves[comp].predict(ages), lw=2.5,
