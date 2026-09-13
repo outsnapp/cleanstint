@@ -1,0 +1,32 @@
+=== 1. PREDICTION (frozen before Monza) ===
+HARD  pred 13.0 -> act 9.3
+MED   pred -2.8 -> act 45.9
+composite -2.8 -> 19.9 | MISS
+
+=== 2. MEASUREMENT (fuel-corrected, all races incl. Austria) ===
+Found 4 race files: ['laps_2026_Austria_R.csv', 'laps_2026_Silverstone_R.csv', 'laps_2026_Monza_R.csv', 'laps_2026_Australia_R.csv']
+
+======================================================================
+HAAS DEGRADATION CHECK (Fuel-Corrected)
+======================================================================
+
+--- Australia ---
+MEDIUM | Haas: -230.8 | Field: -120.6 | Delta: -110.2 ms/lap  🟢 HAAS BETTER
+HARD   | Haas:  -56.7 | Field:  -56.3 | Delta:   -0.4 ms/lap  ⚪ NEUTRAL
+
+--- Austria ---
+MEDIUM | Haas:  +94.7 | Field: +115.0 | Delta:  -20.3 ms/lap  🟢 HAAS BETTER
+HARD   | Haas: +116.4 | Field:  +94.9 | Delta:  +21.5 ms/lap  🔴 HAAS WORSE (Matches Quotes)
+
+--- Monza ---
+MEDIUM | Haas:  -18.1 | Field:  -76.1 | Delta:  +58.0 ms/lap  🔴 HAAS WORSE (Matches Quotes)
+HARD   | Haas:  -73.1 | Field:  -83.9 | Delta:  +10.8 ms/lap  🔴 HAAS WORSE (Matches Quotes)
+
+--- Silverstone ---
+MEDIUM | Haas:  -76.0 | Field:  -55.3 | Delta:  -20.6 ms/lap  🟢 HAAS BETTER
+HARD   | Haas:  -23.9 | Field:  -52.5 | Delta:  +28.7 ms/lap  🔴 HAAS WORSE (Matches Quotes)
+
+=== 3. AUSTRIA: Ocon's nine-lap cliff, within-team ===
+Ocon   : 1715.5 ms/lap after lap 9
+Bearman: 1346.0 ms/lap after lap 9
+field  : 1118.5 ms/lap after lap 9
