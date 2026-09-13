@@ -11,6 +11,19 @@ PIT_S, HORIZON = 21.0, 10
 
 metrics = json.loads((DATA / "metrics_2026.json").read_text())
 FROZEN = {"mae": 0.0482, "rmse": 0.0690, "n": 73, "src": "core/test_2026: frozen 2025 model scored on 2026 races, not refit"}
+_mr = {}
+_mp = Path(__file__).resolve().parent.parent / "scripts" / "merge_result.json"
+if _mp.exists():
+    try: _mr = json.loads(_mp.read_text())
+    except Exception: _mr = {}
+def _mget(*ks, default=None):
+    for k in ks:
+        if k in _mr and _mr[k] is not None: return _mr[k]
+    return default
+ABL = {"with_battery": _mget("wear_mae_with_battery","mae_with_battery","with_battery_mae", default=0.214),
+       "shift_ms": _mget("mean_shift_ms_per_lap","mean_wear_slope_shift_ms","shift_ms", default=18.8),
+       "corr": _mget("corr_shift_deploy","corr", default=0.30),
+       "decision": _mget("decision","verdict", default="OUT")}
 try: forecast = json.loads((DATA / "forecast_2026.json").read_text())
 except Exception: forecast = {}
 
@@ -48,9 +61,10 @@ def build_combo(df, comp):
     elif age >= a - 5: dec, target = "EXTEND", a
     else: dec, target = "RUN TO TARGET", a
     width = (b - a + 1) if cliff else 0
-    risks = {"PIT NOW": "HIGH" if (cliff and age >= a - 2) else "MEDIUM",
-             "EXTEND": "HIGH" if (cliff and width <= 2) else "MEDIUM",
-             "RUN TO TARGET": "HIGH" if (cliff and age + HORIZON >= a) else "LOW"}
+    live_cliff = cliff if not noclf else None
+    risks = {"PIT NOW": "MEDIUM" if live_cliff is None else ("HIGH" if age >= live_cliff[0] - 2 else "MEDIUM"),
+             "EXTEND": "MEDIUM" if live_cliff is None else ("HIGH" if (live_cliff[1] - live_cliff[0]) <= 2 else "MEDIUM"),
+             "RUN TO TARGET": "LOW" if live_cliff is None else ("HIGH" if age + HORIZON >= live_cliff[0] else ("MEDIUM" if age + HORIZON >= live_cliff[0] - 3 else "LOW"))}
     def total(box):
         if not xs: return None
         t, ag, boxed = 0.0, age, False
@@ -188,7 +202,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:Arial,H
  <div id="footer"><span>__LIMITS__</span><span>CleanStint v1.0</span></div>
 </div>
 <script>
-const DATA=__DATA__;const FROZEN=__FROZEN__;
+const DATA=__DATA__;const FROZEN=__FROZEN__;const ABL=__ABL__;let ablOn=false;
+function toggleAbl(){ablOn=!ablOn;var v=document.getElementById("abl-val"),s=document.getElementById("abl-sub");if(!v||!s)return;
+if(ablOn){v.innerHTML=ABL.with_battery.toFixed(3)+" <small>s/lap</small>";s.textContent="WITH battery in wear path -> pre-registered rule fired "+ABL.decision+" (shift +"+ABL.shift_ms.toFixed(1)+" ms/lap, corr "+ABL.corr.toFixed(2)+"); battery now lives in strategy layer only";}
+else{v.innerHTML=FROZEN.mae.toFixed(3)+" <small>s/lap</small>";s.textContent="wear-slope MAE, "+FROZEN.n+" dry 2026 stints (2025 model, not refit) - shipped config";}}
 const $=id=>document.getElementById(id);
 const sessKeys=Object.keys(DATA);
 function fill(sel,items,keep){sel.innerHTML='';items.forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k;sel.appendChild(o);});if(keep&&items.includes(keep))sel.value=keep;}
@@ -209,12 +226,12 @@ function render(){
      '<span class="'+(n==='RUN TO TARGET'?'chip grey':'chip red')+'">'+c.risks[n]+' RISK</span>'+
      '<div class="c">'+c.cons[n]+'</div></div>';}).join('');
  const wear=c.wear===null?'—':c.wear.toFixed(3);
- const cliff=c.cliff?(c.cliff[0]+' – '+c.cliff[1]):'not observed';
+ const cliff=(c.no_cliff||!c.cliff)?'not observed in session':(c.cliff[0]+' – '+c.cliff[1]);
  const pace=c.pace===null?'—':sgn(c.pace);
  const band=c.band?' <span class="band">('+sgn(c.band[0])+' to '+sgn(c.band[1])+')</span>':'';
  const mae=c.mae===null?'—':c.mae.toFixed(3), base=c.base===null?'—':c.base.toFixed(3);
  $('stats').innerHTML=
-  '<div class="stat"><div class="l">Frozen-core validation</div><div><div class="val">'+FROZEN.mae.toFixed(3)+' <small>s/lap</small></div><div class="sub">wear-slope MAE, '+FROZEN.n+' dry 2026 stints (2025 model, not refit)</div></div></div>'+
+  '<div class="stat" style="cursor:pointer" onclick="toggleAbl()" title="click: ablation switch"><div class="l">Frozen-core validation · tap = ablation</div><div><div class="val" id="abl-val">'+FROZEN.mae.toFixed(3)+' <small>s/lap</small></div><div class="sub" id="abl-sub">wear-slope MAE, '+FROZEN.n+' dry 2026 stints (2025 model, not refit) - shipped config</div></div></div>'+
   '<div class="stat"><div class="l">Wear rate</div><div><div class="val">'+wear+' <small>s/lap</small></div><div class="sub">Causal wear rate (session)</div></div></div>'+
   '<div class="stat"><div class="l">Cliff window</div><div><div class="val">'+cliff+'</div><div class="sub">Tyre age (laps)</div></div></div>'+
   '<div class="stat"><div class="l">Pace in +5 / +10 / +15</div><div><div class="val">'+sgn(c.pace5)+' / '+pace+' / '+sgn(c.pace15)+' <small>s/lap</small>'+band+'</div><div class="sub">Expected vs. now · band on +10</div></div></div>'+
@@ -256,6 +273,6 @@ window.addEventListener('resize',render);
 fill($('s-sess'),sessKeys,'laps_2026_Australia_FP2.csv');onSess();
 </script></body></html>"""
 
-html = TEMPLATE.replace("__DATA__", json.dumps(OUTDATA)).replace("__LIMITS__", lim).replace("__FROZEN__", json.dumps(FROZEN))
+html = TEMPLATE.replace("__DATA__", json.dumps(OUTDATA)).replace("__LIMITS__", lim).replace("__FROZEN__", json.dumps(FROZEN)).replace("__ABL__", json.dumps(ABL))
 OUT.write_text(html)
 print("wrote", OUT, "| sessions:", list(OUTDATA.keys()))

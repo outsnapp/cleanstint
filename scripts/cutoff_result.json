@@ -1,0 +1,20 @@
+{
+  "pred_per_compound": {
+    "HARD": 13.8,
+    "MEDIUM": -2.6,
+    "SOFT": -15.6
+  },
+  "act_per_compound": {
+    "HARD": 9.3,
+    "MEDIUM": 45.9
+  },
+  "pred_composite": 2.0,
+  "act_composite": 19.9,
+  "err": 17.9,
+  "verdict": "PASS",
+  "value": "PRIOR BEATS NAIVE",
+  "n_train_stints": 654,
+  "n_train_haas": 65,
+  "n_test_stints": 28,
+  "n_test_haas": 3
+}
